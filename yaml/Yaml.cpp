@@ -23,7 +23,7 @@
 *
 */
 
-#include "Yaml.hpp"
+#include "yaml.hpp"
 #include <memory>
 #include <fstream>
 #include <sstream>
@@ -61,6 +61,7 @@ namespace Yaml
     static const std::string g_ErrorIndentation             = "Space indentation is less than 2.";
     static const std::string g_ErrorInvalidBlockScalar      = "Invalid block scalar.";
     static const std::string g_ErrorInvalidQuote            = "Invalid quote.";
+    static const std::string g_AnchorKeyIncorrect           = "No such anchor.";
     static const std::string g_EmptyString                  = "";
     static Yaml::Node        g_NoneNode;
 
@@ -1322,6 +1323,8 @@ namespace Yaml
         static const unsigned char FlagMask[3];
 
         std::string     Data;       ///< Data of line.
+        std::string     Anchor;     ///< Anchor name of line.
+        std::string     Reference;  ///< Reference name of line.
         size_t          No;         ///< Line number.
         size_t          Offset;     ///< Offset to first character in data.
         Node::eType     Type;       ///< Type of line.
@@ -1641,6 +1644,29 @@ namespace Yaml
                 if (valueStart != std::string::npos)
                 {
                     value = pLine->Data.substr(valueStart);
+
+                    // Check for anchor or reference
+                    if (value.size() > 0 && (value[0] == '&' || value[0] == '*'))
+                    {
+                        valueStart = value.find_first_of(" \t");
+
+                        // Set anchor or reference
+                        if (value[0] == '&')
+                        {
+                            pLine->Anchor = value.substr(1, valueStart-1);
+                        }
+                        else
+                        {
+                            pLine->Reference = value.substr(1, valueStart-1);
+                        }
+
+                        // Update value
+                        valueStart = value.find_first_not_of(" \t", valueStart);
+                        if (valueStart != std::string::npos)
+                        {
+                            value = value.substr(valueStart);
+                        }
+                    }
                 }
             }
 
@@ -1667,10 +1693,7 @@ namespace Yaml
 
                 newLineOffset = tokenPos + 2;
             }
-            else
-            {
-                newLineOffset += pLine->Offset;
-            }
+            newLineOffset += pLine->Offset;
 
             // Add new line with value.
             unsigned char dummyBlockFlags = 0;
@@ -1829,9 +1852,11 @@ namespace Yaml
         {
             ReaderLine * pNextLine = nullptr;
             while(it != m_Lines.end())
-            {
+            {                
                 ReaderLine * pLine = *it;
                 Node & childNode = node[pLine->Data];
+                auto reference = pLine->Reference;  
+                auto anchor = pLine->Anchor;              
 
                 // Move to next line, error check.
                 ++it;
@@ -1840,21 +1865,45 @@ namespace Yaml
                     throw InternalException(ExceptionMessage(g_ErrorUnexpectedDocumentEnd, *pLine));
                 }
 
-                // Handle value of map
-                Node::eType valueType = (*it)->Type;
-                switch(valueType)
+                // Check for reference
+                if (!reference.empty())
                 {
-                case Node::SequenceType:
-                    ParseSequence(childNode, it);
-                    break;
-                case Node::MapType:
-                    ParseMap(childNode, it);
-                    break;
-                case Node::ScalarType:
-                    ParseScalar(childNode, it);
-                    break;
-                default:
-                    break;
+                    auto rit = anchors.find(reference);
+                    if (rit != anchors.end())
+                    {
+                        childNode = anchors[reference];
+                    }
+                    else
+                    {
+                        throw InternalException(ExceptionMessage(g_AnchorKeyIncorrect, *pLine));
+                    }
+                    ++it;
+                } 
+                else
+                {
+
+                    // Handle value of map
+                    Node::eType valueType = (*it)->Type;
+                    switch(valueType)
+                    {
+                    case Node::SequenceType:
+                        ParseSequence(childNode, it);
+                        break;
+                    case Node::MapType:
+                        ParseMap(childNode, it);
+                        break;
+                    case Node::ScalarType:
+                        ParseScalar(childNode, it);
+                        break;
+                    default:
+                        break;
+                    }
+
+                    // Add anchor
+                    if (!anchor.empty())
+                    {
+                        anchors[anchor] = childNode;
+                    }
                 }
 
                 // Check next line. if map and correct level, go on, else exit.
@@ -2217,8 +2266,8 @@ namespace Yaml
             return false;
         }
 
-        std::list<ReaderLine *> m_Lines;    ///< List of lines.
-
+        std::list<ReaderLine *> m_Lines;            ///< List of lines.
+        std::map<std::string, Node> anchors; ///< Map of anchor values
     };
 
     // Parsing functions
